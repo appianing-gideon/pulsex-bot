@@ -100,7 +100,7 @@ const FormData = require("form-data");
 // ========================
 // CONFIG
 // ========================
-const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 
