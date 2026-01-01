@@ -100,8 +100,9 @@ const FormData = require("form-data");
 // ========================
 // CONFIG
 // ========================
-const TELEGRAM_TOKEN = "PASTE_YOUR_TELEGRAM_BOT_TOKEN";
-const OPENAI_API_KEY = "PASTE_YOUR_OPENAI_API_KEY";
+const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
