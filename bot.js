@@ -92,206 +92,176 @@
 // });
 
 
-const TelegramBot = require("node-telegram-bot-api");
-const fs = require("fs");
-const axios = require("axios");
-const FormData = require("form-data");
+import TelegramBot from "node-telegram-bot-api";
+import OpenAI from "openai";
+import axios from "axios";
+import dotenv from "dotenv";
 
-// ========================
-// CONFIG
-// ========================
- const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+dotenv.config();
 
+// ================= CONFIG =================
+const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+// Conversation state
+const userState = {};
 
-// ========================
-// AUTHORS
-// ========================
-const authors = "Alexander Piasa Asiamah & Gideon Appianing";
-
-// ========================
-// EMERGENCY NUMBERS
-// ========================
+// Emergency numbers
 const emergencyNumbers = {
-  usa: { label: "🇺🇸 USA", number: "911" },
-  canada: { label: "🇨🇦 Canada", number: "911" },
-  europe: { label: "🇪🇺 Europe", number: "112" },
-  asia: { label: "🌏 Asia", number: "112" },
-  nigeria: { label: "🇳🇬 Nigeria", number: "112" },
-  kenya: { label: "🇰🇪 Kenya", number: "999" },
-  ghana: { label: "🇬🇭 Ghana", number: "112" },
-  global: { label: "🌍 Global", number: "112" }
+  Ghana: "112",
+  Nigeria: "112",
+  Kenya: "112",
+  USA: "911",
+  UK: "999",
+  default: "112"
 };
 
-// ========================
-// EMERGENCY SYMPTOMS
-// ========================
-const emergencySymptoms = [
-  "chest_pain",
-  "difficulty_breathing",
-  "loss_of_consciousness",
-  "severe_bleeding"
-];
+// =============== /START ====================
+bot.onText(/\/start/, async (msg) => {
+  const chatId = msg.chat.id;
 
-// ========================
-// DETECT COUNTRY
-// ========================
-function detectCountry(msg) {
-  const lang = msg.from.language_code || "";
-  if (lang.includes("US")) return emergencyNumbers.usa;
-  if (lang.includes("CA")) return emergencyNumbers.canada;
-  if (lang.startsWith("fr") || lang.startsWith("de")) return emergencyNumbers.europe;
-  if (lang.startsWith("sw")) return emergencyNumbers.kenya;
-  return emergencyNumbers.global;
-}
+  userState[chatId] = { step: 1 };
 
-// ========================
-// SEVERITY LEVELS
-// ========================
-function calculateSeverity(symptoms) {
-  let score = 0;
-  symptoms.forEach(s => {
-    if (emergencySymptoms.includes(s)) score += 5;
-    else score += 1;
-  });
-  if (score >= 7) return "🔴 Severe";
-  if (score >= 4) return "🟠 Moderate";
-  return "🟢 Mild";
-}
-
-// ========================
-// HOSPITALS LINK
-// ========================
-function hospitalLink() {
-  return "https://www.google.com/maps/search/nearest+hospital";
-}
-
-// ========================
-// CONDITION PREDICTION LOGIC
-// ========================
-const conditions = [
-  {
-    name: "Malaria",
-    symptoms: { fever: 3, headache: 2, chills: 3, sweating: 2, fatigue: 1 },
-    drugs: ["Artemether-Lumefantrine"],
-    advice: "Drink fluids and visit a hospital for a malaria test."
-  },
-  {
-    name: "Typhoid Fever",
-    symptoms: { fever: 3, stomach_pain: 2, diarrhea: 2, fatigue: 1 },
-    drugs: ["Ciprofloxacin (doctor prescribed)"],
-    advice: "Avoid street food and get a blood test."
-  },
-  {
-    name: "Common Cold",
-    symptoms: { sneezing: 2, runny_nose: 2, sore_throat: 1, headache: 1 },
-    drugs: ["Paracetamol", "Vitamin C"],
-    advice: "Rest well and stay hydrated."
-  }
-];
-
-function predictCondition(userSymptoms) {
-  if (userSymptoms.some(s => emergencySymptoms.includes(s))) {
-    return { emergency: true, message: "🚨 Emergency detected!" };
-  }
-
-  let results = [];
-  for (let cond of conditions) {
-    let score = 0;
-    userSymptoms.forEach(s => { if (cond.symptoms[s]) score += cond.symptoms[s]; });
-    if (score > 0) results.push({ name: cond.name, score, drugs: cond.drugs, advice: cond.advice });
-  }
-
-  results.sort((a, b) => b.score - a.score);
-  return { emergency: false, predictions: results.slice(0, 3) };
-}
-
-// ========================
-// TELEGRAM HANDLERS
-// ========================
-
-// /start
-bot.onText(/\/start/, (msg) => {
-  const loc = detectCountry(msg);
-  bot.sendMessage(
-    msg.chat.id,
-    `👋 Hello!\n🩺 PulseX Medical Assistant\n_By ${authors}_\n\n` +
-    `🌍 Auto-detected region: ${loc.label}\nType your symptoms or send a voice message.`,
-    { parse_mode: "Markdown" }
-  );
+  await bot.sendMessage(chatId, "Hey, how are you doing? This is PulseX by Alexander Engidion.");
+  await bot.sendMessage(chatId, "This bot was created by Alexander Piasa Asiamah & Gideon Appianing.");
+  await bot.sendMessage(chatId, "What seems to be wrong?");
+  userState[chatId].step = 2;
 });
 
-// TEXT INPUT
+// =============== TEXT ======================
 bot.on("message", async (msg) => {
-  if (!msg.text || msg.voice) return; // skip voice messages here
-
   const chatId = msg.chat.id;
-  const symptoms = msg.text.toLowerCase().replace(/\s+/g, "_").split(",");
-  const severity = calculateSeverity(symptoms);
+  const text = msg.text;
 
-  if (symptoms.some(s => emergencySymptoms.includes(s))) {
-    const loc = detectCountry(msg);
-    bot.sendMessage(chatId, "🚨 EMERGENCY DETECTED", {
-      reply_markup: { inline_keyboard: [[{ text: `🚑 Call Ambulance (${loc.number})`, url: `tel:${loc.number}` }], [{ text: "🏥 Find Hospitals Nearby", url: hospitalLink() }]] }
-    });
-    return;
+  if (!userState[chatId] || !text || text.startsWith("/")) return;
+
+  if (userState[chatId].step === 2) {
+    userState[chatId].symptoms = text;
+    userState[chatId].step = 3;
+
+    return bot.sendMessage(chatId, "How severe is your condition? (Mild / Moderate / Severe)");
   }
 
-  bot.sendMessage(
-    chatId,
-    `🧠 Assessment Complete\n📊 Severity: *${severity}*\n🏥 Nearby hospitals:\n${hospitalLink()}\n⚠️ Not a medical diagnosis.`,
-    { parse_mode: "Markdown" }
-  );
-});
+  if (userState[chatId].step === 3) {
+    userState[chatId].severity = text.toLowerCase();
 
-// VOICE INPUT + WHISPER AI TRANSCRIPTION
-bot.on("voice", async (msg) => {
-  const chatId = msg.chat.id;
-
-  try {
-    const file = await bot.getFile(msg.voice.file_id);
-    const url = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${file.file_path}`;
-
-    const response = await axios({ url, method: "GET", responseType: "stream" });
-    const path = `voice_${chatId}.ogg`;
-    const writer = fs.createWriteStream(path);
-    response.data.pipe(writer);
-    await new Promise((resolve, reject) => { writer.on("finish", resolve); writer.on("error", reject); });
-
-    const form = new FormData();
-    form.append("file", fs.createReadStream(path));
-    form.append("model", "whisper-1");
-
-    const whisperRes = await axios.post("https://api.openai.com/v1/audio/transcriptions", form, {
-      headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, ...form.getHeaders() }
+    // AI Prediction
+    const prediction = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "You are a medical assistant." },
+        {
+          role: "user",
+          content: `Symptoms: ${userState[chatId].symptoms}. Predict 3 possible conditions.`
+        }
+      ]
     });
 
-    const transcription = whisperRes.data.text;
-    bot.sendMessage(chatId, `🎤 Transcribed Text: "${transcription}"`);
-
-    const symptoms = transcription.toLowerCase().replace(/\s+/g, "_").split(",");
-    const severity = calculateSeverity(symptoms);
-
-    if (symptoms.some(s => emergencySymptoms.includes(s))) {
-      const loc = detectCountry(msg);
-      bot.sendMessage(chatId, "🚨 EMERGENCY DETECTED", {
-        reply_markup: { inline_keyboard: [[{ text: `🚑 Call Ambulance (${loc.number})`, url: `tel:${loc.number}` }], [{ text: "🏥 Find Hospitals Nearby", url: hospitalLink() }]] }
-      });
-      return;
-    }
-
-    bot.sendMessage(
+    await bot.sendMessage(
       chatId,
-      `🧠 Assessment Complete\n📊 Severity: *${severity}*\n🏥 Nearby hospitals:\n${hospitalLink()}\n⚠️ Not a medical diagnosis.`,
-      { parse_mode: "Markdown" }
+      "🧠 Possible conditions:\n" + prediction.choices[0].message.content
     );
 
-  } catch (err) {
-    console.error(err);
-    bot.sendMessage(chatId, "⚠️ Could not transcribe your voice. Please type your symptoms.");
+    // Tips & drugs
+    const tips = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "You are a medical assistant." },
+        {
+          role: "user",
+          content: `Give safety tips and over-the-counter drug suggestions for: ${userState[chatId].symptoms}`
+        }
+      ]
+    });
+
+    await bot.sendMessage(
+      chatId,
+      "💡 Tips & Drug Suggestions:\n" + tips.choices[0].message.content
+    );
+
+    await bot.sendMessage(
+      chatId,
+      "You may now upload a picture of the problem (if visible) or send a voice message."
+    );
+
+    userState[chatId].step = 4;
   }
 });
 
-console.log("✅ PulseX Ultra with AI voice transcription is running globally...");
+// =============== IMAGE =====================
+bot.on("photo", async (msg) => {
+  const chatId = msg.chat.id;
+  const photo = msg.photo[msg.photo.length - 1];
+  const file = await bot.getFile(photo.file_id);
+  const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
+
+  const analysis = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "system", content: "You analyze visible medical conditions in images." },
+      { role: "user", content: `Analyze this image: ${fileUrl}` }
+    ]
+  });
+
+  await bot.sendMessage(
+    chatId,
+    "🖼 Image Analysis:\n" + analysis.choices[0].message.content
+  );
+
+  if (userState[chatId]?.severity === "severe") {
+    await bot.sendMessage(chatId, "⚠️ This seems severe. Please share your location.", {
+      reply_markup: {
+        keyboard: [[{ text: "📍 Share Location", request_location: true }]],
+        resize_keyboard: true,
+        one_time_keyboard: true
+      }
+    });
+  }
+});
+
+// =============== VOICE =====================
+bot.on("voice", async (msg) => {
+  const chatId = msg.chat.id;
+  const file = await bot.getFile(msg.voice.file_id);
+  const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
+
+  const transcript = await openai.audio.transcriptions.create({
+    model: "whisper-1",
+    file: fileUrl
+  });
+
+  await bot.sendMessage(chatId, "🎙 You said: " + transcript.text);
+});
+
+// =============== LOCATION (FINAL) ==========
+bot.on("location", async (msg) => {
+  const chatId = msg.chat.id;
+  const { latitude, longitude } = msg.location;
+
+  const geo = await axios.get(
+    `https://nominatim.openstreetmap.org/reverse`,
+    { params: { format: "json", lat: latitude, lon: longitude } }
+  );
+
+  const country = geo.data.address?.country || "default";
+  const emergency = emergencyNumbers[country] || emergencyNumbers.default;
+
+  const hospitals = await axios.get(
+    `https://nominatim.openstreetmap.org/search`,
+    { params: { q: "hospital", format: "json", limit: 5, lat: latitude, lon: longitude } }
+  );
+
+  const list = hospitals.data.map(h => `- ${h.display_name}`).join("\n");
+
+  await bot.sendMessage(chatId, "🚑 EMERGENCY SUPPORT", {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "Call Ambulance 🚨", url: `tel:${emergency}` }]
+      ]
+    }
+  });
+
+  await bot.sendMessage(chatId, "🏥 Nearby Hospitals:\n" + list);
+});
+
+console.log("✅ PulseX bot running with node-telegram-bot-api");
