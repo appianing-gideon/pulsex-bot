@@ -100,7 +100,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 // ================= CONFIG =================
-const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
+const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // Conversation state
