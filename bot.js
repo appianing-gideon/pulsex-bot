@@ -1,6 +1,7 @@
 require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const OpenAI = require("openai");
+const fs = require("fs");
 const axios = require("axios");
 
 // ---------------- INITIALIZATION ----------------
@@ -36,15 +37,89 @@ function isEmergency(severity) {
   return severity >= 8;
 }
 
-// ---------------- SAFE MEDICATION GUIDANCE ----------------
-function medicationAdvice(text) {
-  if (/headache|fever/i.test(text)) {
-    return "💊 *Possible relief:* Paracetamol (Acetaminophen)\n⚠️ Do not exceed recommended dose. Avoid if allergic.";
+// ---------------- EMERGENCY PHRASE TRIGGERS ----------------
+const emergencyPhraseTriggers = [
+  "call ambulance",
+  "type call ambulance",
+  "i want to die",
+  "i feel like dying",
+  "i can’t breathe",
+  "i can't breathe",
+  "shortness of breath",
+  "my breath has seizures",
+  "i am having seizures",
+  "seizure",
+  "i am choking"
+];
+
+function isEmergencyPhrase(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return emergencyPhraseTriggers.some(t => lower.includes(t));
+}
+
+// ---------------- AI EMERGENCY INTENT DETECTION ----------------
+async function aiDetectEmergencyIntent(text) {
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a medical safety classifier. Answer ONLY 'YES' or 'NO'. Say YES if the text indicates suicide, breathing difficulty, seizure, collapse, or immediate danger."
+        },
+        { role: "user", content: text }
+      ]
+    });
+    return response.choices[0].message.content.trim() === "YES";
+  } catch (e) {
+    return false; // fail-safe
   }
-  if (/stomach|abdominal|diarrhea/i.test(text)) {
-    return "💊 *Possible relief:* Oral rehydration solution or antacids.\n⚠️ Avoid NSAIDs.";
+}
+
+// ---------------- SAFE MEDICATION GUIDANCE + AI DRUG SUGGESTION ----------------
+async function generateMedicationAdvice(symptoms) {
+  // Local rules first
+  let advice = "";
+  if (/headache|fever/i.test(symptoms)) {
+    advice = "💊 *Possible relief:* Paracetamol (Acetaminophen)\n⚠️ Do not exceed recommended dose. Avoid if allergic.";
+  } else if (/stomach|abdominal|diarrhea/i.test(symptoms)) {
+    advice = "💊 *Possible relief:* Oral rehydration solution or antacids.\n⚠️ Avoid NSAIDs.";
   }
-  return "💊 Medication depends on condition. Consult a healthcare professional.";
+
+  // AI suggestion for additional guidance
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "You are a professional pharmacist. Provide safe, over-the-counter medications and remedies for common symptoms. Never suggest prescription-only drugs. Provide concise advice." },
+        { role: "user", content: `Symptoms: ${symptoms}` }
+      ]
+    });
+    const aiAdvice = completion.choices[0].message.content;
+    if (aiAdvice) advice += `\n\n💡 *AI-based suggestion:*\n${aiAdvice}`;
+  } catch (e) {
+    // fail silently if API fails
+  }
+
+  return advice || "💊 Please consult a healthcare professional for your symptoms.";
+}
+
+// ---------------- FOLLOW-UP QUESTIONS ----------------
+async function generateFollowUp(symptoms) {
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "You are PulseX, an AI healthcare assistant. Ask 1-2 relevant follow-up questions to clarify the patient's condition based on the symptoms." },
+        { role: "user", content: `Symptoms: ${symptoms}` }
+      ]
+    });
+    return completion.choices[0].message.content || "";
+  } catch (e) {
+    return "";
+  }
 }
 
 // ---------------- EMERGENCY INLINE BUTTON ----------------
@@ -92,14 +167,77 @@ bot.on("location", (msg) => {
   );
 });
 
-// ---------------- VOICE INPUT ----------------
-bot.on("voice", (msg) => {
+// ---------------- VOICE INPUT WITH WHISPER ----------------
+bot.on("voice", async (msg) => {
+  const chatId = msg.chat.id;
   const country = msg.from.language_code?.toUpperCase() || "GH";
-  bot.sendMessage(
-    msg.chat.id,
-    "🎙️ *Voice message received.*\n\nIf this is urgent, tap below immediately:",
-    { parse_mode: "Markdown", reply_markup: emergencyInlineButton(country) }
-  );
+
+  try {
+    // Download voice file
+    const fileId = msg.voice.file_id;
+    const file = await bot.getFile(fileId);
+    const url = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+    const filePath = `/tmp/voice_${chatId}.ogg`;
+    const writer = fs.createWriteStream(filePath);
+    const response = await axios.get(url, { responseType: "stream" });
+    response.data.pipe(writer);
+    await new Promise(resolve => writer.on("finish", resolve));
+
+    // Transcribe with Whisper
+    const transcription = await openai.audio.transcriptions.create({
+      file: fs.createReadStream(filePath),
+      model: "whisper-1"
+    });
+    const text = transcription.text;
+
+    const severity = calculateSeverity(text);
+    const aiEmergency = await aiDetectEmergencyIntent(text);
+
+    if (isEmergencyPhrase(text) || isEmergency(severity) || aiEmergency) {
+      bot.sendMessage(
+        chatId,
+        `🚨 *MEDICAL EMERGENCY DETECTED (from voice)*
+
+📊 Severity: *${severity}/10*
+
+⛔ Do NOT wait.
+📞 Call emergency services immediately.`,
+        { parse_mode: "Markdown", reply_markup: emergencyInlineButton(country) }
+      );
+      return;
+    }
+
+    // AI Response + follow-up + medication advice
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "You are PulseX, an AI healthcare assistant. Never diagnose. Ask questions, assess severity, give safe advice." },
+        { role: "user", content: text }
+      ]
+    });
+
+    const followUp = await generateFollowUp(text);
+    const meds = await generateMedicationAdvice(text);
+
+    bot.sendMessage(
+      chatId,
+      `🎙️ *Transcribed voice message:* ${text}
+
+${completion.choices[0].message.content}
+
+📊 *Severity:* ${severity}/10
+
+${meds}
+
+❓ Follow-up question(s):
+${followUp}`,
+      { parse_mode: "Markdown" }
+    );
+
+  } catch (err) {
+    console.error(err);
+    bot.sendMessage(chatId, "⚠️ Unable to process voice message. If urgent, call local emergency services immediately.");
+  }
 });
 
 // ---------------- IMAGE INPUT ----------------
@@ -124,8 +262,9 @@ bot.on("message", async (msg) => {
   userHistory[chatId] = userHistory[chatId] || [];
   userHistory[chatId].push({ text, severity, time: new Date().toISOString() });
 
-  // Emergency flow
-  if (isEmergency(severity)) {
+  const aiEmergency = await aiDetectEmergencyIntent(text);
+
+  if (isEmergencyPhrase(text) || isEmergency(severity) || aiEmergency) {
     bot.sendMessage(
       chatId,
       `🚨 *MEDICAL EMERGENCY DETECTED*
@@ -139,7 +278,7 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  // AI RESPONSE
+  // AI Response + follow-up + medication advice
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -149,16 +288,24 @@ bot.on("message", async (msg) => {
       ]
     });
 
+    const followUp = await generateFollowUp(text);
+    const meds = await generateMedicationAdvice(text);
+
     bot.sendMessage(
       chatId,
       `${completion.choices[0].message.content}
 
 📊 *Severity:* ${severity}/10
 
-${medicationAdvice(text)}`,
+${meds}
+
+❓ Follow-up question(s):
+${followUp}`,
       { parse_mode: "Markdown" }
     );
   } catch (error) {
     bot.sendMessage(chatId, "⚠️ I’m having trouble responding. If urgent, contact a healthcare professional immediately.");
   }
 });
+
+console.log("✅ PulseX bot is running with AI drug advice + follow-up!");
